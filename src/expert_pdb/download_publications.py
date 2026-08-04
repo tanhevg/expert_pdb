@@ -91,7 +91,7 @@ def read_mapping(path: Path) -> pl.DataFrame:
             pl.col(pmid_column).cast(pl.String).alias("pmid"),
         )
         .filter(pl.col("pmid").is_not_null() & (pl.col("pmid") != ""))
-        .unique()
+        .unique().sort('pmid')
     )
 
 
@@ -190,6 +190,42 @@ def unzip_archives(publication_dir: Path) -> None:
             contents.extractall(extracted_dir)
         marker.touch()
 
+def download_publication(pmcid:str, client, state: pl.DataFrame, state_path: Path, publications_dir: Path):
+    completed = state.filter(
+        (pl.col("pmcid") == pmcid) & pl.col("download_checked")
+    ).height > 0
+    if completed:
+        return state
+    versions = list_open_pmc_versions(client, pmcid)
+    latest_version = find_latest_version(versions)
+    if latest_version is None:
+        state = state.with_columns(
+            pl.when(pl.col("pmcid") == pmcid)
+            .then(pl.lit(True))
+            .otherwise(pl.col("download_checked"))
+            .alias("download_checked")
+        )
+        state.write_parquet(state_path)
+        return state
+    download_open_pmc_s3(client, latest_version, publications_dir)
+    unzip_archives(publications_dir / latest_version)
+    state = state.with_columns(
+        pl.when(pl.col("pmcid") == pmcid)
+        .then(pl.lit(latest_version))
+        .otherwise(pl.col("download_version"))
+        .alias("download_version"),
+        pl.when(pl.col("pmcid") == pmcid)
+        .then(pl.lit(True))
+        .otherwise(pl.col("downloaded"))
+        .alias("downloaded"),
+        pl.when(pl.col("pmcid") == pmcid)
+        .then(pl.lit(True))
+        .otherwise(pl.col("download_checked"))
+        .alias("download_checked"),
+    )
+    state.write_parquet(state_path)
+    return state
+
 
 def download_publications(state: pl.DataFrame, state_path: Path, target_dir: Path) -> pl.DataFrame:
     client = init_s3_client()
@@ -197,39 +233,11 @@ def download_publications(state: pl.DataFrame, state_path: Path, target_dir: Pat
     pmcids = state.filter(pl.col("pmcid").is_not_null()).get_column("pmcid").unique()
     for i, pmcid in enumerate(pmcids):
         log.info(f"Publication {i} out of {len(pmcids)}")
-        completed = state.filter(
-            (pl.col("pmcid") == pmcid) & pl.col("download_checked")
-        ).height > 0
-        if completed:
-            continue
-        versions = list_open_pmc_versions(client, pmcid)
-        latest_version = find_latest_version(versions)
-        if latest_version is None:
-            state = state.with_columns(
-                pl.when(pl.col("pmcid") == pmcid)
-                .then(pl.lit(True))
-                .otherwise(pl.col("download_checked"))
-                .alias("download_checked")
-            )
-            state.write_parquet(state_path)
-            continue
-        download_open_pmc_s3(client, latest_version, publications_dir)
-        unzip_archives(publications_dir / latest_version)
-        state = state.with_columns(
-            pl.when(pl.col("pmcid") == pmcid)
-            .then(pl.lit(latest_version))
-            .otherwise(pl.col("download_version"))
-            .alias("download_version"),
-            pl.when(pl.col("pmcid") == pmcid)
-            .then(pl.lit(True))
-            .otherwise(pl.col("downloaded"))
-            .alias("downloaded"),
-            pl.when(pl.col("pmcid") == pmcid)
-            .then(pl.lit(True))
-            .otherwise(pl.col("download_checked"))
-            .alias("download_checked"),
-        )
-        state.write_parquet(state_path)
+        try:
+            state = download_publication(pmcid, client, state, state_path, publications_dir)
+        except Exception as e:
+            log.error(f"Error downloading pmcid {pmcid}", exc_info=e)
+         
     return state
 
 
