@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "expert-pdb"
+version = "0.1.0"
+description = "Retrieve open-access publications and supplements linked to PDB entries."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Expert PDB contributors" }]
+dependencies = [
+  'requests',
+  'boto3',
+  'polars'
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10,<2",
+  "pytest>=8.2,<9",
+  "pytest-httpx>=0.30,<1",
+  "ruff>=0.5,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/expert_pdb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
