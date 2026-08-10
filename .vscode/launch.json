@@ -5,13 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Expert PDB",
+            "name": "Extract Protocols",
             "type": "debugpy",
             "request": "launch",
-            "program": "src/expert_pdb/__main__.py",
+            "program": "src/expert_pdb/extract_protocols.py",
             "console": "integratedTerminal",
             "args": [
-                "--pdb-ids", "pdb_ids.txt"
+                "/Users/evgeny/nobackup/expert_pdb", 
+                // "--pmc-ids", "PMC9999484", 
+                "--pmc-ids", "PMC9999727", 
+                "--ollama-url", "http://codon-gpu-006:11434",
+                "--force"
             ]
         }
     ]

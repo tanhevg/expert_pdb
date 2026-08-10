@@ -151,7 +151,9 @@ def resolve_pmids(state: pl.DataFrame, state_path: Path) -> pl.DataFrame:
     attempted = set(
         state.filter(pl.col("resolution_attempted")).get_column("pmid")
     )
-    unresolved = [pmid for pmid in state.get_column("pmid").unique() if pmid not in attempted]
+    unresolved = sorted(
+        pmid for pmid in state.get_column("pmid").unique() if pmid not in attempted
+    )
     log.info(f"Will resolve {len(unresolved)} PMIDs to PMC")
     resolved_count = 0
     for start in range(0, len(unresolved), RESOLUTION_BATCH_SIZE):
