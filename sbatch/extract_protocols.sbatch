@@ -11,5 +11,8 @@
 
 set -e -o pipefail
 
-nohup ollama serve >~/log/ollama.log 2>&1
+cd ~/code/expert_pdb
+. ~/.bashrc
+micromamba activate expert-pdb
+OLLAMA_NUM_PARALLEL=1 nohup ollama serve >~/log/ollama.log 2>&1
 extract_protocols ~/nobackup/expert_pdb
