@@ -10,9 +10,9 @@
 #SBATCH -e "/homes/evgeny/nobackup/log/%x_%j.err"
 
 set -e -o pipefail
+. ~/.bashrc
 
 cd ~/code/expert_pdb
-. ~/.bashrc
 micromamba activate expert-pdb
-OLLAMA_NUM_PARALLEL=1 nohup ollama serve >~/log/ollama.log 2>&1
+OLLAMA_NUM_PARALLEL=1 nohup ollama serve >~/log/ollama.log 2>&1 &
 extract_protocols ~/nobackup/expert_pdb
