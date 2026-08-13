@@ -1,6 +1,6 @@
 #!/bin/env bash
 
-#SBATCH --time=08:00:00
+#SBATCH --time=1-
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=32G
@@ -15,4 +15,4 @@ set -e -o pipefail
 cd ~/code/expert_pdb
 micromamba activate expert-pdb
 OLLAMA_NUM_PARALLEL=1 nohup ollama serve >~/log/ollama.log 2>&1 &
-extract_protocols ~/nobackup/expert_pdb
+extract_protocols ~/nobackup/expert_pdb --force

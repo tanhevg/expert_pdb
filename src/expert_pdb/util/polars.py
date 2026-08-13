@@ -7,7 +7,7 @@ def frame(rows: list[dict[str, Any]], schema: dict[str, pl.DataType]) -> pl.Data
     return pl.DataFrame(rows, schema=schema, strict=False) if rows else pl.DataFrame(schema=schema)
 
 
-def load_parquet(path: Path, schema) -> pl.DataFrame:
+def load_or_create_parquet(path: Path, schema) -> pl.DataFrame:
     return pl.read_parquet(path) if path.exists() else frame([], schema)
 
 def now() -> str:

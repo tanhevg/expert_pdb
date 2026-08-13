@@ -4,19 +4,20 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+        
         {
             "name": "Extract Protocols",
             "type": "debugpy",
             "request": "launch",
-            "program": "src/expert_pdb/extract_protocols.py",
+            "program": "/Users/evgeny/micromamba/envs/expert-pdb/bin/extract_protocols",
             "console": "integratedTerminal",
             "args": [
                 "/Users/evgeny/nobackup/expert_pdb", 
                 // "--pmc-ids", "PMC9999484", 
-                "--pmc-ids", "PMC9999727", 
-                "--ollama-url", "http://codon-gpu-006:11434",
-                "--force"
+                "--pmc-ids", "PMC10008584,PMC10011822,PMC10023715", 
+                "--ollama-url", "http://codon-gpu-007:11434",
             ]
-        }
+        },
+        
     ]
 }

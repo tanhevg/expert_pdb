@@ -34,7 +34,7 @@ PROMPT = """
     section ids should be preserved in the `protocol_locator` field.
 
     Never try to edit the publication text. All paragraphs from the publication should be included as is, only changing
-    JATS formatting to markdown formatting where possible. Do not try to remove bits of text that you think are irrelevant
+    JATS formatting to markdown where possible. Do not try to remove bits of text that you think are irrelevant
     or repetitive. Repeating the same protocol for different proteins that are described in the same publication is fine.
 
     All references that are cited in the protocols should be preserved in the `references` field.
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     state_path = args.target_dir / EXTRACTION_STATE_FILENAME
-    state = upl.load_parquet(state_path, STATE_SCHEMA)
+    state = upl.load_or_create_parquet(state_path, STATE_SCHEMA)
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     run_dir: Path = args.target_dir / "llm_runs" / run_id
     os.makedirs(run_dir, exist_ok=True)
