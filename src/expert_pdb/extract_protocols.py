@@ -3,39 +3,28 @@
 import argparse
 import json
 import logging
-import re
+import os
 import uuid
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-import os
 
 import polars as pl
 import requests
 
 from .util import polars as upl
-from .util import util
 from .util import ollama
-from .util import jats
+from .util import util
 
 from expert_pdb.download_publications import STATE_FILENAME, configure_logging, read_mapping
-from expert_pdb.expert_schema import (
-    BUFFER_ROLES,
-    HOST_FIELDS,
-    SCHEMA_VERSION,
-    ExpertField,
-    prompt_schema,
-)
 PROMPT = """
     You are an expert curator of biochemical data. Read the publication below, and extract from it any 
     information about protein cloning, expression and purification protocols. Please be specific, and 
     ignore the other experimental protocols that you might come across in the paper, such as crystallisation,
     structure determination, target selection and others.
     
-    Format your response as json. 
-    At the top level the json should contain a list of records, with the fields described below. 
-    Note that some of the fields are optional. _DO NOT_ create a top-level element named 'recoreds'.
+    Return a top-level JSON array of records matching the supplied JSON schema. Do not add prose or
+    markdown. Note that some of the fields are optional.
     
     The publication might describe a complex molecule containing multiple protein chains. For such publications the json 
     should contain multiple records, each describing the protocols for a single protein. 
@@ -43,6 +32,10 @@ PROMPT = """
     The protocols might be scattered across the publication in different sections and paragraphs. 
     There is no need to preserve the paper structure in such cases, multiple paragraphs can just be concatenated, but the 
     section ids should be preserved in the `protocol_locator` field.
+
+    Never try to edit the publication text. All paragraphs from the publication should be included as is, only changing
+    JATS formatting to markdown formatting where possible. Do not try to remove bits of text that you think are irrelevant
+    or repetitive. Repeating the same protocol for different proteins that are described in the same publication is fine.
 
     All references that are cited in the protocols should be preserved in the `references` field.
 
@@ -52,13 +45,13 @@ PROMPT = """
       - `retrieved` means that the protocols were retrieved from this publication.
       - `supplement` means that the protocols are contained in supplementary material.
       - `citation` means that the protocols are contained in one of the cited papers.
-    - `protocol_text`: only present if `status=retrieved`. The protocol text from the publication. 
+    - `protocol_text`: only present if `state=retrieved`. The protocol text from the publication. 
     The publication text must be left unchanged, but JATS formatting should be replaced with markdown formatting.
-    - `protocol_locator`: only present if `status=retrieved`. List of JATS section ids where the `protocol_text` was taken from. 
+    - `protocol_locator`: only present if `state=retrieved`. List of JATS section ids where the `protocol_text` was taken from. 
     List of strings. Example: ["S1", "S2", "S7"].
-    - `protocol_supplements`: only present if `status=supplement`. JATS ids of the supplements that contains the protocol.
+    - `protocol_supplements`: only present if `state=supplement`. JATS ids of the supplements that contains the protocol.
     List of strings. Example: ["SD2"].
-    - `protocol_references`: only present if `status=citation`. JATS reference ids of the cited papers with the protocols. 
+    - `protocol_references`: only present if `state=citation`. JATS reference ids of the cited papers with the protocols. 
      List of strings. Example: ["R13", "R42"].
     - `protein_identifiers`. These protein might be identified by multilple ids, for example gene name, uniprot id, etc. These identifiers 
     should be extracted into this field, stating the id source. Sometimes gene names are agreed upon by convention, and it is impossible to 
@@ -74,8 +67,6 @@ PROMPT = """
     Example1: [{"id": "R1", "PMID": "7816639", "PMCID": "PMC11370360", "DOI": "10.1101/2024.08.14.607690"}, 
         {"id": "R7", "PMID": "7815639", "PMCID": "PMC11470360", "DOI": "10.1101/2024.08.14.687690"}] 
     Example2: [{"id": "R17", "citation": "Smith, J. D. _et al_. Quantum coherence in biological systems. Nature 529, 245-248 (2024)."}]
-    
-    Here is the publication, formatted as JATS XML:
 """
 
 EXTRACTION_STATE_FILENAME = "extraction_state.parquet"
@@ -99,6 +90,44 @@ PROTOCOL_SCHEMA: dict[str, pl.DataType] = {
     "status": pl.String,
     "evidence_locators": pl.List(pl.String),
     "deferred_source_info": pl.String,
+}
+
+PROTOCOL_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "state": {"type": "string", "enum": ["missing", "retrieved", "supplement", "citation"]},
+            "protocol_text": {"type": "string"},
+            "protocol_locator": {"type": "array", "items": {"type": "string"}},
+            "protocol_supplements": {"type": "array", "items": {"type": "string"}},
+            "protocol_references": {"type": "array", "items": {"type": "string"}},
+            "protein_identifiers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}, "source": {"type": "string"}},
+                    "required": ["id", "source"],
+                    "additionalProperties": False,
+                },
+            },
+            "references": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"}, "PMID": {"type": "string"},
+                        "PMCID": {"type": "string"}, "DOI": {"type": "string"},
+                        "citation": {"type": "string"},
+                    },
+                    "required": ["id"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["state", "protein_identifiers", "references"],
+        "additionalProperties": False,
+    },
 }
 
 
@@ -151,8 +180,9 @@ def select_publications(target_dir: Path, args: argparse.Namespace) -> dict[str,
         entry["pdb_ids"].sort()
     return selected
 
-def build_detector_prompt(jats:str) -> str:
-    return PROMPT + jats
+def build_detector_prompt(jats: str) -> str:
+    return PROMPT + "\n\nJSON schema:\n" + json.dumps(PROTOCOL_OUTPUT_SCHEMA) + \
+        "\n\nHere is the publication, formatted as JATS XML:\n" + jats
 
 def _successful(state: pl.DataFrame, pmcid: str, version: str) -> bool:
     return (
@@ -175,7 +205,9 @@ def process_publication(
     jats_file = target_dir / "publications" / download_version / f"{download_version}.xml"
     jats_xml = jats_file.read_text()
     prompt = build_detector_prompt(jats_xml)
-    response = ollama.ollama_json(base_url, model, prompt, publication['pmcid'], run_dir)
+    response = ollama.ollama_json(
+        base_url, model, prompt, publication["pmcid"], PROTOCOL_OUTPUT_SCHEMA, run_dir
+    )
     log.info(f"Extracted protocols for {len(response)} proteins")
     return response
 
@@ -203,7 +235,6 @@ def main(argv: list[str] | None = None) -> int:
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     run_dir: Path = args.target_dir / "llm_runs" / run_id
     os.makedirs(run_dir, exist_ok=True)
-    failed = False
     for pmcid, publication in sorted(publications.items()):
         version = str(publication["download_version"])
         if not args.force and _successful(state, pmcid, version):
@@ -218,19 +249,28 @@ def main(argv: list[str] | None = None) -> int:
             with out_path.open('w') as f:
                 json.dump(protocols_json, f)
             log.info(f"Dumped protocols to {out_path}")
-            state = upl.upsert(state, [{
+            new_state = [{
                 "pmcid": pmcid,
                 "download_version": version,
                 "status": "success",
                 "run_id": run_id,
                 "error": None,
                 "updated_at": upl.now(),
-
-            }], key_columns=["pmcid"])
-            state.write_parquet(state_path)
+            }]
         except Exception as exc:
+            new_state = [{
+                "pmcid": pmcid,
+                "download_version": version,
+                "status": "failure",
+                "run_id": run_id,
+                "error": str(type(exc)) + ' : ' + str(exc),
+                "updated_at": upl.now(),
+            }]
             log.error(f"Exception processing pmc id {pmcid}", exc_info=exc)
-    return 1 if failed else 0
+        finally:
+            state = upl.upsert(state, new_state, key_columns=["pmcid"])
+            state.write_parquet(state_path)
+    return 0
 
 
 if __name__ == "__main__":
