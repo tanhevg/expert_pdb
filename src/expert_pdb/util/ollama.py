@@ -11,6 +11,8 @@ SYSTEM_PROMPT = """
     You are a data processing assistant. You must respond with valid JSON only. 
 """
 
+STATS_KEYS = ["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration"]
+
 
 def preflight_ollama(base_url: str) -> None:
     response = requests.get(base_url.rstrip("/") + "/api/tags", timeout=15)
@@ -33,6 +35,7 @@ def ollama_json(
     pmcid: str,
     output_schema: dict[str, Any],
     out_dir: Path | None = None,
+    capture_stats = False
 ) -> Any:
     url = base_url.rstrip("/") + "/api/generate"
     retry_instruction = (
@@ -70,7 +73,12 @@ def ollama_json(
         if not isinstance(generated, str) or not generated:
             raise RuntimeError("Ollama response has no JSON response string")
         try:
-            return json.loads(generated)
+            ret = json.loads(generated)
+            if capture_stats:
+                stats = {k:body.get(k, -1) for k in STATS_KEYS}
+                return ret, stats
+            else:
+                return ret
         except json.JSONDecodeError as exc:
             if attempt == 2:
                 raise

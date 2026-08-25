@@ -130,6 +130,13 @@ PROTOCOL_OUTPUT_SCHEMA: dict[str, Any] = {
     },
 }
 
+STATS_SCHEMA = {
+    'pmcid': pl.String,
+    'run_id': pl.Int32,
+    'llm_runner': pl.String,
+    'llm_model': pl.String,
+}
+
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +148,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     selected.add_argument("--pmc-ids", nargs="+", metavar="PMCID")
     parser.add_argument("--ollama-url", default=OLLAMA_DEFAULT_URL)
     parser.add_argument("--ollama-model", default=OLLAMA_DEFAULT_MODEL)
+    parser.add_argument("--stats-df-parquet")
+    parser.add_argument("--stats-run-id", type=int, required=False)
     parser.add_argument("--force", action="store_true", help="Re-extract successful publications.")
     return parser.parse_args(argv)
 
@@ -195,7 +204,7 @@ def _successful(state: pl.DataFrame, pmcid: str, version: str) -> bool:
     )
 
 def process_publication(
-    target_dir: Path, publication: dict[str, Any], base_url: str, model: str, run_dir: Path
+    target_dir: Path, publication: dict[str, Any], base_url: str, model: str, run_dir: Path, capture_stats: bool
 ):
     download_version:str = publication["download_version"]
     log.info(f"Extracting protocols from {download_version}")
@@ -206,7 +215,7 @@ def process_publication(
     jats_xml = jats_file.read_text()
     prompt = build_detector_prompt(jats_xml)
     response = ollama.ollama_json(
-        base_url, model, prompt, publication["pmcid"], PROTOCOL_OUTPUT_SCHEMA, run_dir
+        base_url, model, prompt, publication["pmcid"], PROTOCOL_OUTPUT_SCHEMA, run_dir, capture_stats
     )
     log.info(f"Extracted protocols for {len(response)} proteins")
     return response
@@ -235,6 +244,14 @@ def main(argv: list[str] | None = None) -> int:
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     run_dir: Path = args.target_dir / "llm_runs" / run_id
     os.makedirs(run_dir, exist_ok=True)
+    capture_stats = args.stats_df_parquet is not None
+    if capture_stats:
+        assert args.stats_run_id is not None, "Run id is required for capturing stats"
+        stats_schema = STATS_SCHEMA | {k:pl.Int64 for k in ollama.STATS_KEYS}
+        stats_df_path = Path(args.stats_df_parquet)
+        stats_df = upl.load_or_create_parquet(stats_df_path, stats_schema)
+        log.info(f"Loaded stats df with shape {stats_df.shape} to {stats_df_path}")
+        new_stats_df = []
     for pmcid, publication in sorted(publications.items()):
         version = str(publication["download_version"])
         if not args.force and _successful(state, pmcid, version):
@@ -243,8 +260,12 @@ def main(argv: list[str] | None = None) -> int:
         try:
             log.info(f"Processing {pmcid}")
             protocols_json = process_publication(
-                args.target_dir, publication, args.ollama_url, args.ollama_model, run_dir
+                args.target_dir, publication, args.ollama_url, args.ollama_model, run_dir, capture_stats
             )
+            if capture_stats:
+                stats = protocols_json[1]
+                protocols_json = protocols_json[0]
+                new_stats_df.append({'pmcid': pmcid, 'run_id': args.stats_run_id, 'llm_model': args.ollama_model, 'llm_runner': 'ollama'} | stats)
             out_path = run_dir/ f"{pmcid}_protocols.json"
             with out_path.open('w') as f:
                 json.dump(protocols_json, f)
@@ -270,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             state = upl.upsert(state, new_state, key_columns=["pmcid"])
             state.write_parquet(state_path)
+    if capture_stats:
+        stats_df = pl.concat([stats_df, pl.DataFrame(new_stats_df, schema=stats_schema)])
+        log.info(f"Writing stats df with shape {stats_df.shape} to {stats_df_path}")
+        stats_df.write_parquet(stats_df_path)
     return 0
 
 
