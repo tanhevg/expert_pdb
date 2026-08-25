@@ -15,4 +15,4 @@ set -e -o pipefail
 cd ~/code/expert_pdb
 micromamba activate expert-pdb
 OLLAMA_NUM_PARALLEL=1 nohup ollama serve >~/log/ollama.log 2>&1 &
-extract_protocols ~/nobackup/expert_pdb --force
+extract_protocols ~/nobackup/expert_pdb --ollama-model qwen3.6:27b --force

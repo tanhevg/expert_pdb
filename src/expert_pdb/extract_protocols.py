@@ -12,61 +12,41 @@ from typing import Any
 import polars as pl
 import requests
 
-from .util import polars as upl
-from .util import ollama
-from .util import util
+from .util import (
+    polars as upl,
+    ollama,
+    util,
+    jats
+)
 
 from expert_pdb.download_publications import STATE_FILENAME, configure_logging, read_mapping
 PROMPT = """
-    You are an expert curator of biochemical data. Read the publication below, and extract from it any 
-    information about protein cloning, expression and purification protocols. Please be specific, and 
-    ignore the other experimental protocols that you might come across in the paper, such as crystallisation,
-    structure determination, target selection and others.
+    You are an expert curator of biochemical data. Below is an academic publication in JATS format that contains 
+    information about recombinant cloning, expression and purification of proteins (protein production).
+    Read the publication and return only the sections and paragraphs that describe protein production. Please take 
+    care to copy the relevant text as is, without making any changes, additions or omissions. 
+    Please be specific, and ignore the other experimental protocols that you might come across in the paper, such as crystallization,
+    structure determination, target selection and others. Return the full sections or paragraphs, including the opening and closing JATS tags. 
+    The protocol string should include at least one `sec` tag with the preserved `id` attribute. If the section contains other paragraphs,
+    not relevant for protein production protocol, these paragraphs should be dropped. If the protocol is described in multiple sections, all sections should be included.
     
-    Return a top-level JSON array of records matching the supplied JSON schema. Do not add prose or
-    markdown. Note that some of the fields are optional.
+    The result should be returned in JSON format. Return a top-level JSON array of records matching the supplied JSON schema. Do not add prose or
+    markdown. In the unlikely scenario when the relevant protocol text cannot be located, return an empty JSON array.
     
-    The publication might describe a complex molecule containing multiple protein chains. For such publications the json 
-    should contain multiple records, each describing the protocols for a single protein. 
+    The publication might describe a complex molecule containing multiple protein chains. For such publications the JSON 
+    should contain multiple records, each describing the protocols for a single protein. The identifiers for the protein should be included in the relevant field.
+    The protein might be identified by multiple ids, for example gene name, Uniprot id, etc. The source of the id should be preserved, along with the id itself. 
+    Sometimes gene names are agreed upon by convention, and it is impossible to identify the bioinformatics database where the gene name is coming from. 
+    In this case, just leave 'source=gene_name'. Sometimes it is not possible to state where the id is coming from at all. In this case, just leave 'source=unknown'. 
     
-    The protocols might be scattered across the publication in different sections and paragraphs. 
-    There is no need to preserve the paper structure in such cases, multiple paragraphs can just be concatenated, but the 
-    section ids should be preserved in the `protocol_locator` field.
-
-    Never try to edit the publication text. All paragraphs from the publication should be included as is, only changing
-    JATS formatting to markdown where possible. Do not try to remove bits of text that you think are irrelevant
-    or repetitive. Repeating the same protocol for different proteins that are described in the same publication is fine.
-
-    All references that are cited in the protocols should be preserved in the `references` field.
+    The protocol text might contain just a reference to cited papers or to supplementary materials. Such protocols should also be preserved.
 
     Record fields:
-    - `state`: One of `missing`, `retrieved`, `supplement`, `citation`.
-      - `missing` means the publication does not contain any protocols of interest.
-      - `retrieved` means that the protocols were retrieved from this publication.
-      - `supplement` means that the protocols are contained in supplementary material.
-      - `citation` means that the protocols are contained in one of the cited papers.
-    - `protocol_text`: only present if `state=retrieved`. The protocol text from the publication. 
-    The publication text must be left unchanged, but JATS formatting should be replaced with markdown formatting.
-    - `protocol_locator`: only present if `state=retrieved`. List of JATS section ids where the `protocol_text` was taken from. 
-    List of strings. Example: ["S1", "S2", "S7"].
-    - `protocol_supplements`: only present if `state=supplement`. JATS ids of the supplements that contains the protocol.
-    List of strings. Example: ["SD2"].
-    - `protocol_references`: only present if `state=citation`. JATS reference ids of the cited papers with the protocols. 
-     List of strings. Example: ["R13", "R42"].
-    - `protein_identifiers`. These protein might be identified by multilple ids, for example gene name, uniprot id, etc. These identifiers 
-    should be extracted into this field, stating the id source. Sometimes gene names are agreed upon by convention, and it is impossible to 
-    identify the bioinformatics database where the gene name is coming from. In this case, just leave 'gene_name'. Sometimes it is not possible to 
-    state where the id is coming from at all. In this case, just leave unknown. A list of objects with id and type. 
-    Example1: [{"id": "ARRDC3", "source": "HGNC"}, {"id": "Q96B67", "source": "Uniprot"}, {"id": "QWERTY_12345", "source": "unknown"}]
-    Example2: [{"id": "omcT", "source": "gene_name"}, {"id": "Q74A87", "source": "Uniprot"}]
-    - `references` - list of references that were cited in the protocol text. JATS ids should be preserved.
-    If JATS reference contains external ids, like Pubmed ID, PMC ID, or DOI, then give those external ids. Nature citation is not required in this case. 
-    If there are no ids, then give a Nature-formatted citation, i.e. authors, title, journal, issue, pages, (year). 
-    Give not more than 3 authors, for multiple authors use _et al_.
-    A list of objects, with fields dictated by what is present in JATS. 
-    Example1: [{"id": "R1", "PMID": "7816639", "PMCID": "PMC11370360", "DOI": "10.1101/2024.08.14.607690"}, 
-        {"id": "R7", "PMID": "7815639", "PMCID": "PMC11470360", "DOI": "10.1101/2024.08.14.687690"}] 
-    Example2: [{"id": "R17", "citation": "Smith, J. D. _et al_. Quantum coherence in biological systems. Nature 529, 245-248 (2024)."}]
+    - `protocol`: The protein production protocol text from the publication.
+      - Example: <sec id="sec42"><title>Protein expression and purification</title><p>The proteins were expressed in E. Coli ...</p></sec>
+    - `protein_identifiers`. A list of objects with id and type. 
+      - Example1: [{"id": "ARRDC3", "source": "HGNC"}, {"id": "Q96B67", "source": "Uniprot"}, {"id": "QWERTY_12345", "source": "unknown"}]
+      - Example2: [{"id": "omcT", "source": "gene_name"}, {"id": "Q74A87", "source": "Uniprot"}]
 """
 
 EXTRACTION_STATE_FILENAME = "extraction_state.parquet"
@@ -81,27 +61,23 @@ STATE_SCHEMA: dict[str, pl.DataType] = {
     "error": pl.String,
     "updated_at": pl.String,
 }
-PROTOCOL_SCHEMA: dict[str, pl.DataType] = {
-    "pdb_id": pl.String,
-    "pmcid": pl.String,
-    "source_file": pl.String,
-    "source_format": pl.String,
-    "protocol_text": pl.String,
-    "status": pl.String,
-    "evidence_locators": pl.List(pl.String),
-    "deferred_source_info": pl.String,
-}
+# PROTOCOL_SCHEMA: dict[str, pl.DataType] = {
+#     "pdb_id": pl.String,
+#     "pmcid": pl.String,
+#     "source_file": pl.String,
+#     "source_format": pl.String,
+#     "protocol_text": pl.String,
+#     "status": pl.String,
+#     "evidence_locators": pl.List(pl.String),
+#     "deferred_source_info": pl.String,
+# }
 
 PROTOCOL_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "array",
     "items": {
         "type": "object",
         "properties": {
-            "state": {"type": "string", "enum": ["missing", "retrieved", "supplement", "citation"]},
-            "protocol_text": {"type": "string"},
-            "protocol_locator": {"type": "array", "items": {"type": "string"}},
-            "protocol_supplements": {"type": "array", "items": {"type": "string"}},
-            "protocol_references": {"type": "array", "items": {"type": "string"}},
+            "protocol": {"type": "string"},
             "protein_identifiers": {
                 "type": "array",
                 "items": {
@@ -111,21 +87,8 @@ PROTOCOL_OUTPUT_SCHEMA: dict[str, Any] = {
                     "additionalProperties": False,
                 },
             },
-            "references": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "id": {"type": "string"}, "PMID": {"type": "string"},
-                        "PMCID": {"type": "string"}, "DOI": {"type": "string"},
-                        "citation": {"type": "string"},
-                    },
-                    "required": ["id"],
-                    "additionalProperties": False,
-                },
-            },
         },
-        "required": ["state", "protein_identifiers", "references"],
+        "required": ["protocol", "protein_identifiers"],
         "additionalProperties": False,
     },
 }
@@ -151,6 +114,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stats-df-parquet")
     parser.add_argument("--stats-run-id", type=int, required=False)
     parser.add_argument("--force", action="store_true", help="Re-extract successful publications.")
+    parser.add_argument("--store-prompts", action="store_true", help="Store prompts.")
     return parser.parse_args(argv)
 
 
@@ -203,17 +167,26 @@ def _successful(state: pl.DataFrame, pmcid: str, version: str) -> bool:
         > 0
     )
 
-def process_publication(
-    target_dir: Path, publication: dict[str, Any], base_url: str, model: str, run_dir: Path, capture_stats: bool
-):
+def process_publication(publication: dict[str, Any], run_dir:Path, args:argparse.Namespace):
     download_version:str = publication["download_version"]
+    pmcid = publication["pmcid"]
+    target_dir = args.target_dir
+    capture_stats = args.stats_df_parquet is not None
+    base_url = args.ollama_url
+    model = args.ollama_model
     log.info(f"Extracting protocols from {download_version}")
     # publication_dir = target_dir / "publications" / download_version
     # assert publication_dir.is_dir()
     # jats_data = jats.jats_to_json(publication_dir)
     jats_file = target_dir / "publications" / download_version / f"{download_version}.xml"
-    jats_xml = jats_file.read_text()
+    # jats_xml = jats_file.read_text()
+    jats_xml = jats.compact_jats(jats_file)
     prompt = build_detector_prompt(jats_xml)
+    if args.store_prompts:
+        out_path = run_dir/ f"{pmcid}_prompt.txt"
+        log.info(f"Writing prompt of size {len(prompt)} to {out_path}")
+        with out_path.open('w') as f:
+            f.write(prompt)
     response = ollama.ollama_json(
         base_url, model, prompt, publication["pmcid"], PROTOCOL_OUTPUT_SCHEMA, run_dir, capture_stats
     )
@@ -259,9 +232,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             log.info(f"Processing {pmcid}")
-            protocols_json = process_publication(
-                args.target_dir, publication, args.ollama_url, args.ollama_model, run_dir, capture_stats
-            )
+            protocols_json = process_publication(publication, run_dir, args)
             if capture_stats:
                 stats = protocols_json[1]
                 protocols_json = protocols_json[0]

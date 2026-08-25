@@ -10,6 +10,18 @@ IDENTIFIER_PATTERNS = {
     "pmcid": re.compile(r"\bPMC\d+\b", re.IGNORECASE),
 }
 
+def compact_jats(filename: Path) -> str:
+    jats_root = ET.parse(filename).getroot()
+    body = jats_root.find('./body')
+    abstract = jats_root.find('.//abstract')
+    short_article = ET.Element('short_article')
+    if abstract is not None:
+        short_article.append(abstract)
+    assert body is not None
+    short_article.append(body)
+    ret = ET.tostring(short_article, 'unicode', method='xml')
+    return ret
+
 
 def _local_name(element: ET.Element) -> str:
     return element.tag.rsplit("}", 1)[-1]

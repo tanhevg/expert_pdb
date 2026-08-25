@@ -19,13 +19,13 @@ def preflight_ollama(base_url: str) -> None:
     response.raise_for_status()
 
 
-def _save_response(body: dict[str, Any], out_dir: Path | None, pmcid: str, attempt: int) -> None:
+def _save_response(body: str, out_dir: Path | None, pmcid: str, attempt: int) -> None:
     if out_dir is None:
         return
     suffix = "" if attempt == 1 else f"_retry{attempt - 1}"
     out_path = out_dir / f"{pmcid}_ollama_full{suffix}.json"
     with out_path.open("w") as handle:
-        json.dump(body, handle)
+        handle.write(body)
 
 
 def ollama_json(
@@ -53,26 +53,27 @@ def ollama_json(
             "system": SYSTEM_PROMPT,
             "format": output_schema,
             "think": False,
-            "options": {
-                "num_ctx": 81_920,
-                "num_predict": 8_192,
-                "temperature": 0,
-            },
+            # "options": {
+            #     "num_ctx": 81_920,
+            #     "num_predict": 8_192,
+            #     "temperature": 0,
+            # },
             "keep_alive": -1,
         }
         response = requests.post(url, json=request_body, timeout=600)
         response.raise_for_status()
-        body = response.json()
-        _save_response(body, out_dir, pmcid, attempt)
-        if not body.get("done") or body.get("done_reason") != "stop":
-            raise RuntimeError(
-                "Ollama did not complete generation: "
-                f"{body.get('done')}, {body.get('done_reason')}"
-            )
-        generated = body.get("response")
-        if not isinstance(generated, str) or not generated:
-            raise RuntimeError("Ollama response has no JSON response string")
         try:
+            log.debug(response.text)
+            _save_response(response.text, out_dir, pmcid, attempt)
+            body = response.json()
+            if not body.get("done") or body.get("done_reason") != "stop":
+                raise RuntimeError(
+                    "Ollama did not complete generation: "
+                    f"{body.get('done')}, {body.get('done_reason')}"
+                )
+            generated = body.get("response")
+            if not isinstance(generated, str) or not generated:
+                raise RuntimeError("Ollama response has no JSON response string")
             ret = json.loads(generated)
             if capture_stats:
                 stats = {k:body.get(k, -1) for k in STATS_KEYS}
@@ -82,5 +83,5 @@ def ollama_json(
         except json.JSONDecodeError as exc:
             if attempt == 2:
                 raise
-            log.warning("Ollama returned malformed JSON for %s; retrying once: %s", pmcid, exc)
+            log.warning("Ollama returned malformed JSON for %s; retrying", pmcid, exc_info=exc)
     raise AssertionError("unreachable")
