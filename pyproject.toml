@@ -13,7 +13,8 @@ authors = [{ name = "Expert PDB contributors" }]
 dependencies = [
   'requests',
   'boto3',
-  'polars'
+  'polars',
+  "ollama>=0.6,<1"
 ]
 
 [project.optional-dependencies]
@@ -22,7 +23,6 @@ dev = [
   "pytest>=8.2,<9",
   "pytest-httpx>=0.30,<1",
   "ruff>=0.5,<1",
-  "ollama>=0.6,<1"
 ]
 
 [tool.hatch.build.targets.wheel]
