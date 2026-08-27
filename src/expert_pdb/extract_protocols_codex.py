@@ -19,7 +19,7 @@ from expert_pdb.expert_schema import (
     HOST_FIELDS,
     SCHEMA_VERSION,
     ExpertField,
-    prompt_schema,
+    expert_json_schema,
 )
 
 log = logging.getLogger(__name__)
@@ -277,7 +277,7 @@ references were parsed. A direct JATS protocol is retrieved; otherwise use suppl
 or citation only when it is the stated location of protocol details, else missing.
 
 Expert fields by expression host:
-{prompt_schema()}
+{json.dumps(expert_json_schema(), ensure_ascii=False, indent=2)}
 
 Publication: {pmcid}; PDB IDs linked by publication metadata: {", ".join(pdb_ids)}
 JATS source material (all locators below are stable source locators):
@@ -334,7 +334,7 @@ def normalize_buffer(value: Any) -> str:
 
 
 def _normalize_value(value: Any, field: ExpertField) -> Any:
-    value_type = field.value_type
+    value_type = _value_type(field)
     if value_type in {"text", "id"}:
         if not isinstance(value, str) or not value.strip():
             raise ExtractionError(f"{field.identifier} must be non-empty text")
@@ -541,6 +541,20 @@ def _amount_dtype() -> pl.DataType:
     return pl.Struct({"value": pl.Float64, "unit": pl.String})
 
 
+def _value_type(field: ExpertField) -> str:
+    """Map Supplementary Sheet S2's format labels to extractor value types."""
+    return {
+        "uniprot id": "uniprot",
+        "sequence": "sequence",
+        "buffer": "buffer",
+        "yes/no": "boolean",
+        "numeric value": "number",
+        "numeric value and units": "amount",
+        "percentage": "percentage",
+        "1 to 10": "score",
+    }.get(field.format, "text")
+
+
 def _field_dtype(field: ExpertField) -> pl.DataType:
     return {
         "boolean": pl.Boolean,
@@ -548,7 +562,7 @@ def _field_dtype(field: ExpertField) -> pl.DataType:
         "percentage": pl.Float64,
         "score": pl.Int8,
         "amount": _amount_dtype(),
-    }.get(field.value_type, pl.String)
+    }.get(_value_type(field), pl.String)
 
 
 def _expert_schema(host: str) -> dict[str, pl.DataType]:
@@ -576,7 +590,6 @@ def _expert_schema(host: str) -> dict[str, pl.DataType]:
     for field in HOST_FIELDS[host]:
         dtype = _field_dtype(field)
         schema[field.identifier] = dtype
-        schema[field.alias] = dtype
         schema[f"{field.identifier}_confidence"] = pl.Float64
     return schema
 
@@ -703,7 +716,6 @@ def _expert_row(
             continue
         normalized_value = _normalize_value(supplied["value"], field)
         row[identifier] = normalized_value
-        row[field.alias] = normalized_value
         row[f"{identifier}_confidence"] = confidence
         row["field_provenance"].append({"field_id": identifier, "locators": locators})
     return row

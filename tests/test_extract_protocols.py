@@ -150,7 +150,7 @@ def test_main_writes_typed_records_evidence_and_run_json(tmp_path, monkeypatch):
     assert records.get_column("pdb_id").to_list() == ["1abc", "2def"]
     assert records.get_column("pdb_linkage").to_list() == ["publication_inferred"] * 2
     assert records.get_column("T4").to_list() == ["P12345", "P12345"]
-    assert records.get_column("uniprot_id").to_list() == ["P12345", "P12345"]
+    assert "uniprot_id" not in records.columns
     assert records.get_column("E3").to_list() == [{"value": 2.0, "unit": "L"}] * 2
     assert (
         records.get_column("E11").to_list() == ["pH 7.5; BUFF HEPES, 50 mM; SALT NaCl, 250 mM"] * 2
@@ -257,5 +257,5 @@ def test_static_schema_covers_every_expression_template():
         schema = extract_protocols_codex._expert_schema(host)
         assert identifiers.issubset(schema)
         assert "T1" in schema
-        assert "protein_name" in schema
+        assert "protein_name" not in schema
         assert "T1_confidence" in schema

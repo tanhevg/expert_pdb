@@ -18,6 +18,23 @@
                 "--ollama-url", "http://codon-gpu-007:11434",
             ]
         },
+        {
+            "name": "Extract Expert",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "/Users/evgeny/micromamba/envs/expert-pdb/bin/extract_expert",
+            "console": "integratedTerminal",
+            "env": {
+                "OLLAMA_HOST": "hl-codon-cn-056"
+            },
+            "args": [
+                "/Users/evgeny/nobackup/expert_pdb", 
+                // "--pmc-ids", "PMC9999484", 
+                "--pmc-ids", "PMC13224165", 
+                "--ollama-url", "http://hl-codon-cn-056:11434",
+                "--ollama-model", "qwen3.8:27b", "--force", "--store-prompts"
+            ]
+        },
         
     ]
 }

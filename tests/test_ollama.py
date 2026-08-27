@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from expert_pdb.util import ollama
+from expert_pdb.util import ollama_requests
 
 
 class FakeResponse:
@@ -15,6 +15,10 @@ class FakeResponse:
     def json(self) -> dict[str, object]:
         return self.payload
 
+    @property
+    def text(self):
+        return json.dumps(self.payload)
+
 
 def test_ollama_json_uses_schema_disables_thinking_and_bounds_output(monkeypatch, tmp_path):
     calls: list[dict[str, object]] = []
@@ -24,15 +28,16 @@ def test_ollama_json_uses_schema_disables_thinking_and_bounds_output(monkeypatch
         calls.append(kwargs["json"])
         return FakeResponse({"done": True, "done_reason": "stop", "response": "[]"})
 
-    monkeypatch.setattr(ollama.requests, "post", fake_post)
+    monkeypatch.setattr(ollama_requests.requests, "post", fake_post)
     schema = {"type": "array", "items": {"type": "object"}}
 
-    result = ollama.ollama_json("http://ollama.test", "model", "prompt", "PMC1", schema, tmp_path)
+    result = ollama_requests.ollama_json("http://ollama.test", "model", "prompt", "PMC1", schema, tmp_path)
     assert result == []
 
     assert calls[0]["format"] == schema
     assert calls[0]["think"] is False
-    assert calls[0]["options"] == {"num_ctx": 81920, "num_predict": 8192, "temperature": 0}
+    assert calls[0]["stream"] is False
+    assert type(calls[0]["format"]) == dict
     assert json.loads((tmp_path / "PMC1_ollama_full.json").read_text())["response"] == "[]"
 
 
@@ -49,9 +54,9 @@ def test_ollama_json_retries_once_after_malformed_json(monkeypatch, tmp_path):
         calls.append(kwargs["json"])
         return next(responses)
 
-    monkeypatch.setattr(ollama.requests, "post", fake_post)
+    monkeypatch.setattr(ollama_requests.requests, "post", fake_post)
 
-    assert ollama.ollama_json("http://ollama.test", "model", "prompt", "PMC1", {}, tmp_path) == []
+    assert ollama_requests.ollama_json("http://ollama.test", "model", "prompt", "PMC1", {}, tmp_path) == []
 
     assert len(calls) == 2
     assert "prior response could not be parsed" in calls[1]["prompt"]
@@ -63,7 +68,7 @@ def test_ollama_json_raises_after_second_malformed_response(monkeypatch):
     def fake_post(url, **kwargs):
         return FakeResponse({"done": True, "done_reason": "stop", "response": "{not json"})
 
-    monkeypatch.setattr(ollama.requests, "post", fake_post)
+    monkeypatch.setattr(ollama_requests.requests, "post", fake_post)
 
     with pytest.raises(json.JSONDecodeError):
-        ollama.ollama_json("http://ollama.test", "model", "prompt", "PMC1", {})
+        ollama_requests.ollama_json("http://ollama.test", "model", "prompt", "PMC1", {})

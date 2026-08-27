@@ -22,6 +22,7 @@ dev = [
   "pytest>=8.2,<9",
   "pytest-httpx>=0.30,<1",
   "ruff>=0.5,<1",
+  "ollama>=0.6,<1"
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -45,3 +46,4 @@ files = ["src"]
 
 [project.scripts]
 extract_protocols = "expert_pdb.extract_protocols:main"
+extract_expert = "expert_pdb.extract_expert:main"

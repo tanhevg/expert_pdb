@@ -13,8 +13,8 @@ import polars as pl
 import requests
 
 from .util import (
+    ollama_requests,
     polars as upl,
-    ollama,
     util,
     jats
 )
@@ -187,7 +187,7 @@ def process_publication(publication: dict[str, Any], run_dir:Path, args:argparse
         log.info(f"Writing prompt of size {len(prompt)} to {out_path}")
         with out_path.open('w') as f:
             f.write(prompt)
-    response = ollama.ollama_json(
+    response = ollama_requests.ollama_json(
         base_url, model, prompt, publication["pmcid"], PROTOCOL_OUTPUT_SCHEMA, run_dir, capture_stats
     )
     log.info(f"Extracted protocols for {len(response)} proteins")
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("No downloaded publications matched the selection.")
         return 1
     try:
-        ollama.preflight_ollama(args.ollama_url)
+        ollama_requests.preflight_ollama(args.ollama_url)
     except requests.RequestException as exc:
         log.error("Ollama is unavailable at %s: %s", args.ollama_url, exc)
         return 1
@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     capture_stats = args.stats_df_parquet is not None
     if capture_stats:
         assert args.stats_run_id is not None, "Run id is required for capturing stats"
-        stats_schema = STATS_SCHEMA | {k:pl.Int64 for k in ollama.STATS_KEYS}
+        stats_schema = STATS_SCHEMA | {k:pl.Int64 for k in ollama_requests.STATS_KEYS}
         stats_df_path = Path(args.stats_df_parquet)
         stats_df = upl.load_or_create_parquet(stats_df_path, stats_schema)
         log.info(f"Loaded stats df with shape {stats_df.shape} to {stats_df_path}")

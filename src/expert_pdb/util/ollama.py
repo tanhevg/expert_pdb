@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import requests
+import ollama
 
 log = logging.getLogger(__name__)
 # log.setLevel(logging.DEBUG)
@@ -15,15 +15,11 @@ STATS_KEYS = ["total_duration", "load_duration", "prompt_eval_count", "prompt_ev
 
 
 def preflight_ollama(base_url: str) -> None:
-    response = requests.get(base_url.rstrip("/") + "/api/tags", timeout=15)
-    response.raise_for_status()
+    ollama.list()
 
 
-def _save_response(body: str, out_dir: Path | None, pmcid: str, attempt: int) -> None:
-    if out_dir is None:
-        return
-    suffix = "" if attempt == 1 else f"_retry{attempt - 1}"
-    out_path = out_dir / f"{pmcid}_ollama_full{suffix}.json"
+def _save_response(body: str, out_dir: Path | None, pmcid: str, suffix:str) -> None:
+    out_path = out_dir / f"{pmcid}_{suffix}.txt"
     with out_path.open("w") as handle:
         handle.write(body)
 
@@ -33,55 +29,26 @@ def ollama_json(
     model: str,
     prompt: str,
     pmcid: str,
-    output_schema: dict[str, Any],
     out_dir: Path | None = None,
-    capture_stats = False
 ) -> Any:
-    url = base_url.rstrip("/") + "/api/generate"
-    retry_instruction = (
-        "\n\nYour prior response could not be parsed as JSON. Regenerate the complete response "
-        "using the supplied JSON schema. Return JSON only."
-    )
-    for attempt in (1, 2):
-        request_prompt = prompt if attempt == 1 else prompt + retry_instruction
-        if log.isEnabledFor(logging.DEBUG):
-            log.debug("Prompting model %s at %s (attempt %d)", model, base_url, attempt)
-        request_body: Any = {
-            "model": model,
-            "prompt": request_prompt,
-            "stream": False,
-            "system": SYSTEM_PROMPT,
-            "format": output_schema,
-            "think": False,
-            # "options": {
-            #     "num_ctx": 81_920,
-            #     "num_predict": 8_192,
-            #     "temperature": 0,
-            # },
-            "keep_alive": -1,
-        }
-        response = requests.post(url, json=request_body, timeout=600)
-        response.raise_for_status()
-        try:
-            log.debug(response.text)
-            _save_response(response.text, out_dir, pmcid, attempt)
-            body = response.json()
-            if not body.get("done") or body.get("done_reason") != "stop":
-                raise RuntimeError(
-                    "Ollama did not complete generation: "
-                    f"{body.get('done')}, {body.get('done_reason')}"
-                )
-            generated = body.get("response")
-            if not isinstance(generated, str) or not generated:
-                raise RuntimeError("Ollama response has no JSON response string")
-            ret = json.loads(generated)
-            if capture_stats:
-                stats = {k:body.get(k, -1) for k in STATS_KEYS}
-                return ret, stats
-            else:
-                return ret
-        except json.JSONDecodeError as exc:
-            if attempt == 2:
-                raise
-            log.warning("Ollama returned malformed JSON for %s; retrying", pmcid, exc_info=exc)
-    raise AssertionError("unreachable")
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("Prompting model %s at %s", model, base_url)
+    messages = ollama.generate(model=model, prompt=prompt, think=True, stream=True, system=SYSTEM_PROMPT, 
+                               options={'temperature':0})
+    thinking_response = ""
+    response = ""
+    full_response = ""
+    response_list = []
+    for m in messages:
+        response_list.append(m)
+        full_response += str(m)
+        if 'thinking' in m:
+            thinking_response += m['thinking']
+        if 'response' in m:
+            response += m['response']
+    _save_response(full_response, out_dir, pmcid, 'full')
+    _save_response(response, out_dir, pmcid, 'response')
+    _save_response(thinking_response, out_dir, pmcid, 'thinking')
+    log.debug(f"Loading json from response:\n{response}")
+    ret = json.loads(response)
+    return ret
