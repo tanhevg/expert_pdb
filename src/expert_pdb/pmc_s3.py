@@ -24,10 +24,9 @@ def init_s3_client():
     return s3_client
 
 def list_open_pmc_versions(s3_client, pmc_id:str) -> typing.Iterable[str]:
-    bucket_name = OPEN_PMC_S3_BUCKET_NAME
     prefix_search = f"{pmc_id}."
     response = s3_client.list_objects_v2(
-        Bucket=bucket_name,
+        Bucket=OPEN_PMC_S3_BUCKET_NAME,
         Prefix=prefix_search,
         Delimiter='/'
     )

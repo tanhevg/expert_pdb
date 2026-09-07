@@ -12,19 +12,31 @@ from typing import Any
 import polars as pl
 import requests
 
-from .util import (
-    ollama,
-    polars as upl,
-    util,
-    jats,
-    pdb_id_resolver
-)
-
-from expert_pdb.download_publications import STATE_FILENAME, configure_logging, read_mapping
-from expert_pdb.extract_protocols import select_publications, parse_args, _successful, EXTRACTION_STATE_FILENAME, STATE_SCHEMA
 from expert_pdb import expert_schema
+from expert_pdb.download_publications import configure_logging
+from .util import jats, ollama, pdb_sequences
+from .util import polars as upl
 
-# EXPERT_JSON_SCHEMA = json.dumps(expert_schema.expert_json_schema(), indent=4, ensure_ascii=False)
+
+EXTRACTION_STATE_FILENAME = "extraction_state.parquet"
+OLLAMA_DEFAULT_URL = "http://localhost:11434"
+OLLAMA_DEFAULT_MODEL = "qwen3.8:27b"
+
+STATE_SCHEMA: dict[str, pl.DataType] = {
+    "pmcid": pl.String,
+    "download_version": pl.String,
+    "status": pl.String,
+    "run_id": pl.String,
+    "error": pl.String,
+    "updated_at": pl.String,
+}
+
+STATS_SCHEMA = {
+    'pmcid': pl.String,
+    'run_id': pl.Int32,
+    'llm_runner': pl.String,
+    'llm_model': pl.String,
+}
 
 EXPERT_JSON_SCHEMA = expert_schema.expert_json_schema({
     'O_source': {
@@ -70,13 +82,20 @@ EXPERT_JSON_SCHEMA = expert_schema.expert_json_schema({
 PROMPT = """
     You are an expert curator of biochemical data. Below is an academic publication that contains 
     information about recombinant cloning, expression and purification of proteins (protein production).
-    Read the publication and extract the information about protein production from it in Expert format, as defined below. 
-    The response should be a valid JSON document. Here is the Expert JSON schema:
-
-    {expert_json_schema}
-
-    Populate as many fields as possible.
-    Do not populate the construct sequences if they are not available in the publication text.
+    Read the publication and extract the information about protein production from it in Expert format, 
+    as defined by the schema below. The response should be a valid JSON document.  Populate as many fields as possible.
+   
+    The PDB protein-chain data below is authoritative deposited construct information. When a
+    protocol can be unambiguously associated with a listed PDB ID and chain, populate C2 with
+    that chain's exact `sequence`, even when the sequence is absent from the publication text.
+    This sequence may include engineered mutations and expression tags. Do not populate C2 from
+    a PDB chain when the publication does not establish that the construct is the same one, and
+    never infer, extend, trim, or combine sequences. Do not use PDB data to invent any other
+    fields. For a construct unambiguously associated with a PDB chain, use that chain's
+    `uniprot_mappings` to populate T4. These PDBe UniProt mappings take precedence over any
+    UniProt ID inferred from the publication; use an inferred publication ID only when no mapped
+    PDBe UniProt ID is available for the matched chain. Each `uniprot_mappings` item gives the
+    associated UniProt residue boundaries and coverage. PDBe gene names are supporting identifiers.
 
     If the publication contains production protocols for multiple proteins or construct definitions, 
     the JSON array should contain multiple elements. Be as specific as possible, do not try to 
@@ -88,13 +107,14 @@ PROMPT = """
     HGNC gene names or Uniprot or PDB ids, these additional target ids should be included in the JSON
     as additional fields. These fields should be marked with prefix 'TN_', and the id system, if 
     available. For example, {{... "TN_NCBI_Gene_ID": "1105", "TN_ENSEML_ID": "ENSG00000153922.14" }}.
-    Populate HGNC, Uniprot and PDB ids only if they are present in the publication text; do not try to hallucinate them.
+    Populate HGNC and PDB ids only if they are present in the publication text; do not try to
+    hallucinate them. Follow the PDBe mapping rule above for UniProt IDs.
 
     If the publication descibes a protein complex, populate the 'CX...' fields.
 
     Populate the PMC id of the publication `PMCID={pmcid}` in the 'O1' field.
 
-    Do not include the completeness. 
+    Do not include the completeness score. 
 
     If the publication does not contain a protein production protocol, return an empty JSON array.
     
@@ -117,6 +137,14 @@ PROMPT = """
       - pH 8.0; BUFF Tris-Cl, 20 mM; SALT KCl, 500 mM; GLY, 5% (w/v); RED TCEP, 0.5 mM
       - pH 6.5; BUFF BTP, 100 mM; SALT NaCl, 100 mM; GLY, 10% (w/v); DET DDM, 2% (w/v); OTHER ATP, 10 mM; OTHER POPC, 5 mM
 
+    Here is the Expert JSON schema:
+
+    {expert_json_schema}
+
+    Here are deposited protein-chain sequences and annotations returned by the PDBe API:
+
+    {pdb_chain_data}
+
     Here is the publication in JATS format:
 
     {publication_jats}
@@ -125,20 +153,56 @@ PROMPT = """
 
 log = logging.getLogger(__name__)
 
+def _successful(state: pl.DataFrame, pmcid: str, version: str) -> bool:
+    return (
+        state.filter(
+            (pl.col("pmcid") == pmcid)
+            & (pl.col("download_version") == version)
+            & (pl.col("status") == "success")
+        ).height
+        > 0
+    )
 
-def build_detector_prompt(jats: str, pmcid:str) -> str:
-    # pdb_ids = {pdb_id: pdb_id_resolver.resolve_pdb_id(pdb_id) for pdb_id in pdb_ids}
-    # pdb_ids = json.dumps(pdb_ids, indent=4)
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("target_dir", type=Path, help="Downloader output directory.")
+    selected = parser.add_mutually_exclusive_group()
+    selected.add_argument("--pdb-ids", nargs="+", metavar="PDB_ID")
+    selected.add_argument("--pmc-ids", nargs="+", metavar="PMCID")
+    parser.add_argument("--ollama-url", default=OLLAMA_DEFAULT_URL)
+    parser.add_argument("--ollama-model", default=OLLAMA_DEFAULT_MODEL)
+    parser.add_argument("--stats-df-parquet")
+    parser.add_argument("--stats-run-id", type=int, required=False)
+    parser.add_argument("--force", action="store_true", help="Re-extract successful publications.")
+    parser.add_argument("--store-prompts", action="store_true", help="Store prompts.")
+    return parser.parse_args(argv)
+
+def build_detector_prompt(
+    jats: str, pmcid: str, pdb_chain_data: list[pdb_sequences.PDBSequenceRecord]
+) -> str:
     return PROMPT.format(
-        # pdb_ids=pdb_ids, 
         publication_jats=jats, 
         expert_json_schema=EXPERT_JSON_SCHEMA,
-        pmcid=pmcid
+        pmcid=pmcid,
+        pdb_chain_data=json.dumps(pdb_chain_data, indent=4, ensure_ascii=False),
     )
 
 
-def process_publication(publication: dict[str, Any], run_dir:Path, args:argparse.Namespace):
-    download_version:str = publication["download_version"]
+def _resolve_pdb_chain_data(
+    pdb_ids: list[str],
+) -> list[pdb_sequences.PDBSequenceRecord]:
+    """Resolve available PDB chain records without blocking text-only extraction."""
+    try:
+        return pdb_sequences.resolve_pdb_sequences(pdb_ids)
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("Could not resolve PDBe chains: %s", exc)
+        return []
+
+
+def process_publication(
+    publication: dict[str, Any], run_dir: Path, args: argparse.Namespace
+) -> dict[str, Any]:
+    download_version: str = publication["download_version"]
     pmcid = publication["pmcid"]
     target_dir = args.target_dir
     base_url = args.ollama_url
@@ -150,8 +214,8 @@ def process_publication(publication: dict[str, Any], run_dir:Path, args:argparse
     jats_file = target_dir / "publications" / download_version / f"{download_version}.xml"
     # jats_xml = jats_file.read_text()
     jats_xml = jats.compact_jats(jats_file)
-    prompt = build_detector_prompt(jats_xml, pmcid)
-    # prompt = build_detector_prompt(jats_xml, publication['pdb_ids'])
+    pdb_chain_data = _resolve_pdb_chain_data(publication["pdb_ids"])
+    prompt = build_detector_prompt(jats_xml, pmcid, pdb_chain_data)
     if args.store_prompts:
         out_path = run_dir/ f"{pmcid}_prompt.txt"
         log.info(f"Writing prompt of size {len(prompt)} to {out_path}")

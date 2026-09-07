@@ -431,7 +431,7 @@ def _json_schema_descritpion(field: ExpertField) -> str:
     return f"{field.description.strip('. \t\n')}. {field.what_to_capture.strip('. \t\n')}."
 
 
-def expert_json_schema(extra_fields:dict[str, Any]) -> dict[str, Any]:
+def expert_json_schema(extra_fields:dict[str, Any]|None=None) -> dict[str, Any]:
     """Return the static Supplementary Sheet S2 protein-record JSON Schema."""
     host_schemas = []
     for host, fields in HOST_FIELDS.items():
@@ -445,7 +445,8 @@ def expert_json_schema(extra_fields:dict[str, Any]) -> dict[str, Any]:
             }
             if field.format == 'buffer':
                 properties[field.identifier]['description'] += ' Formatted as buffer string.'
-        properties |= extra_fields
+        if extra_fields:
+            properties |= extra_fields
         host_schemas.append(
             {
                 "type": "object",
@@ -454,7 +455,7 @@ def expert_json_schema(extra_fields:dict[str, Any]) -> dict[str, Any]:
                 "additionalProperties": True,
             }
         )
-    return {
+    schema = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -466,6 +467,8 @@ def expert_json_schema(extra_fields:dict[str, Any]) -> dict[str, Any]:
         "required": ["proteins"],
         "additionalProperties": False,
     }
+    ret = json.dumps(schema, ensure_ascii=False, indent=4)
+    return ret
 
 
 if __name__ == '__main__':

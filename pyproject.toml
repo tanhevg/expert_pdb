@@ -45,5 +45,4 @@ strict = true
 files = ["src"]
 
 [project.scripts]
-extract_protocols = "expert_pdb.extract_protocols:main"
 extract_expert = "expert_pdb.extract_expert:main"

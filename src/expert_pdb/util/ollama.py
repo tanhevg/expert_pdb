@@ -18,7 +18,7 @@ def preflight_ollama(base_url: str) -> None:
     ollama.list()
 
 
-def _save_response(body: str, out_dir: Path | None, pmcid: str, suffix:str) -> None:
+def _save_response(body: str, out_dir: Path, pmcid: str, suffix:str) -> None:
     out_path = out_dir / f"{pmcid}_{suffix}.txt"
     with out_path.open("w") as handle:
         handle.write(body)
@@ -30,6 +30,7 @@ def ollama_json(
     prompt: str,
     pmcid: str,
     out_dir: Path | None = None,
+    capture_stats = False
 ) -> Any:
     if log.isEnabledFor(logging.DEBUG):
         log.debug("Prompting model %s at %s", model, base_url)
@@ -39,6 +40,7 @@ def ollama_json(
     response = ""
     full_response = ""
     response_list = []
+    stats = {}
     for m in messages:
         response_list.append(m)
         full_response += str(m)
@@ -46,9 +48,14 @@ def ollama_json(
             thinking_response += m['thinking']
         if 'response' in m:
             response += m['response']
-    _save_response(full_response, out_dir, pmcid, 'full')
-    _save_response(response, out_dir, pmcid, 'response')
-    _save_response(thinking_response, out_dir, pmcid, 'thinking')
+        if capture_stats:
+            stats |= {k:m[k] for k in STATS_KEYS if k in m}
+    if out_dir is not None:
+        _save_response(full_response, out_dir, pmcid, 'full')
+        _save_response(response, out_dir, pmcid, 'response')
+        _save_response(thinking_response, out_dir, pmcid, 'thinking')
     log.debug(f"Loading json from response:\n{response}")
     ret = json.loads(response)
+    if capture_stats:
+        return ret, stats
     return ret
