@@ -11,11 +11,16 @@ from typing import Any
 
 import polars as pl
 import requests
+import asyncio
 
-from expert_pdb import expert_schema
-from expert_pdb.download_publications import configure_logging
-from .util import jats, ollama, pdb_sequences
+from ollama._utils import convert_function_to_tool
+from ollama import Tool
+
+from . import expert_schema
+from .util import jats, ollama, pdb_sequences, util, mcp, agentic_tools
 from .util import polars as upl
+
+from .download_publications import STATE_FILENAME, configure_logging, read_mapping
 
 
 EXTRACTION_STATE_FILENAME = "extraction_state.parquet"
@@ -97,6 +102,11 @@ PROMPT = """
     PDBe UniProt ID is available for the matched chain. Each `uniprot_mappings` item gives the
     associated UniProt residue boundaries and coverage. PDBe gene names are supporting identifiers.
 
+    If the publication contains the NCBI accession numbers, use the `mcp_ncbi` tools to retrieve 
+    the genetic sequence, and populate C1. You might need to follow a chain of NCBI records to 
+    get the gene sequence. Use only the portion of the genetic sequence that translates to 
+    amino acid sequence. Write python code to verify that sequence translation is correct.
+
     If the publication contains production protocols for multiple proteins or construct definitions, 
     the JSON array should contain multiple elements. Be as specific as possible, do not try to 
     represent multiple constructs with the same JSON object. Having multiple JSON objects with 
@@ -150,7 +160,6 @@ PROMPT = """
     {publication_jats}
 """
 
-
 log = logging.getLogger(__name__)
 
 def _successful(state: pl.DataFrame, pmcid: str, version: str) -> bool:
@@ -199,14 +208,12 @@ def _resolve_pdb_chain_data(
         return []
 
 
-def process_publication(
-    publication: dict[str, Any], run_dir: Path, args: argparse.Namespace
+async def process_publication(
+    publication: dict[str, Any], agent:ollama.AsyncOllamaAgent, run_dir: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
     download_version: str = publication["download_version"]
     pmcid = publication["pmcid"]
     target_dir = args.target_dir
-    base_url = args.ollama_url
-    model = args.ollama_model
     log.info(f"Extracting protocols from {download_version}")
     # publication_dir = target_dir / "publications" / download_version
     # assert publication_dir.is_dir()
@@ -214,43 +221,87 @@ def process_publication(
     jats_file = target_dir / "publications" / download_version / f"{download_version}.xml"
     # jats_xml = jats_file.read_text()
     jats_xml = jats.compact_jats(jats_file)
-    pdb_chain_data = _resolve_pdb_chain_data(publication["pdb_ids"])
+    pdb_chain_data = await asyncio.to_thread(_resolve_pdb_chain_data, publication["pdb_ids"])
     prompt = build_detector_prompt(jats_xml, pmcid, pdb_chain_data)
     if args.store_prompts:
         out_path = run_dir/ f"{pmcid}_prompt.txt"
         log.info(f"Writing prompt of size {len(prompt)} to {out_path}")
         with out_path.open('w') as f:
             f.write(prompt)
-    response = ollama.ollama_json(
-        base_url, model, prompt, publication["pmcid"], run_dir
-    )
+    # response = ollama.ollama_json(
+    #     base_url, model, prompt, publication["pmcid"], run_dir
+    # )
+    response = await agent.chat(prompt, ollama.SYSTEM_PROMPT, log_key=publication["pmcid"])
+    response = json.loads(response)
     log.info(f"Extracted protocols for {len(response['proteins'])} proteins")
     return response
 
 
+def select_publications(target_dir: Path, args: argparse.Namespace) -> dict[str, dict[str, Any]]:
+    mapping_path = target_dir / "pdb_pubmed.csv.gz"
+    state_path = target_dir / STATE_FILENAME
+    if not mapping_path.exists() or not state_path.exists():
+        raise ValueError("target_dir must contain pdb_pubmed.csv.gz and download_state.parquet")
+    pdb_pmc_mapping = read_mapping(mapping_path)
+    state = pl.read_parquet(state_path)
+    required = {"pmid", "pmcid", "download_version", "downloaded"}
+    if not required.issubset(state.columns):
+        raise ValueError(f"Download state has incompatible columns: {state.columns}")
+    linked = pdb_pmc_mapping.join(
+        state.select("pmid", "pmcid", "download_version", "downloaded"), on="pmid", how="inner"
+    ).filter(pl.col("downloaded") & pl.col("pmcid").is_not_null())
+    requested_pdb_ids = util.split_ids(args.pdb_ids)
+    requested_pmc_ids = {value.upper() for value in util.split_ids(args.pmc_ids)}
+    if requested_pdb_ids:
+        linked = linked.filter(pl.col("pdb_id").is_in(sorted(requested_pdb_ids)))
+    if requested_pmc_ids:
+        linked = linked.filter(pl.col("pmcid").str.to_uppercase().is_in(sorted(requested_pmc_ids)))
 
-def main(argv: list[str] | None = None) -> int:
-    configure_logging()
-    args = parse_args(argv)
-    try:
-        publications = select_publications(args.target_dir, args)
-    except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
-        log.error("Could not select downloaded publications: %s", exc_info=exc)
-        return 1
-    if not publications:
-        log.error("No downloaded publications matched the selection.")
-        return 1
-    try:
-        ollama.preflight_ollama(args.ollama_url)
-    except requests.RequestException as exc:
-        log.error("Ollama is unavailable at %s: %s", args.ollama_url, exc)
-        return 1
+    selected: dict[str, dict[str, Any]] = {}
+    selected_rows = linked.select("pdb_id", "pmcid", "download_version").unique()
+    for row in selected_rows.iter_rows(named=True):
+        pmcid = str(row["pmcid"]).upper()
+        entry = selected.setdefault(
+            pmcid,
+            {"pmcid": pmcid, "download_version": row["download_version"], "pdb_ids": []},
+        )
+        pdb_id = str(row["pdb_id"]).lower()
+        if pdb_id not in entry["pdb_ids"]:
+            entry["pdb_ids"].append(pdb_id)
+    for entry in selected.values():
+        entry["pdb_ids"].sort()
+    return selected
 
+
+def submit_extracted_data(s:str):
+    f"""Submit the EXPER data extracted from the publication to the system, in JSON format.
+
+    Args:
+        s: the JSON string; must start with '{' and end with '}'
+
+    """
+    json.loads(s)
+    return s
+
+def wire_ollama_agent(args:argparse.Namespace, run_dir:Path) -> ollama.AsyncOllamaAgent:
+    extra_tools = agentic_tools.OLLAMA_AGENTIC_TOOLS.copy()
+    extra_tools['submit_extracted_data'] = submit_extracted_data
+    ollama_agent = ollama.AsyncOllamaAgent(
+        args.ollama_url, args.ollama_model,
+        mcp_params=mcp.MCP_PARAMS, mcp_selector=mcp.MCP_SELECTOR, extra_tools=extra_tools,
+        log_dir=run_dir
+    )
+    return ollama_agent
+
+
+async def process_publications(args, publications):
     state_path = args.target_dir / EXTRACTION_STATE_FILENAME
     state = upl.load_or_create_parquet(state_path, STATE_SCHEMA)
     run_id = f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     run_dir: Path = args.target_dir / "llm_runs" / run_id
     os.makedirs(run_dir, exist_ok=True)
+    ollama_agent = wire_ollama_agent(args, run_dir)
+    await ollama_agent.start()
     for pmcid, publication in sorted(publications.items()):
         version = str(publication["download_version"])
         if not args.force and _successful(state, pmcid, version):
@@ -258,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             log.info(f"Processing {pmcid}")
-            protocols_json = process_publication(publication, run_dir, args)
+            protocols_json = await process_publication(publication, ollama_agent, run_dir, args)
             out_path = run_dir/ f"{pmcid}_expert.json"
             with out_path.open('w') as f:
                 json.dump(protocols_json, f, indent=4, ensure_ascii=False)
@@ -284,7 +335,27 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             state = upl.upsert(state, new_state, key_columns=["pmcid"])
             state.write_parquet(state_path)
+    await ollama_agent.stop()
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging()
+    args = parse_args(argv)
+    try:
+        publications = select_publications(args.target_dir, args)
+    except (OSError, ValueError, pl.exceptions.PolarsError) as exc:
+        log.error("Could not select downloaded publications: %s", exc_info=exc)
+        return 1
+    if not publications:
+        log.error("No downloaded publications matched the selection.")
+        return 1
+    # try:
+    #     ollama.preflight_ollama(args.ollama_url)
+    # except requests.RequestException as exc:
+    #     log.error("Ollama is unavailable at %s: %s", args.ollama_url, exc)
+    #     return 1
+    asyncio.run(process_publications(args, publications))
 
 
 if __name__ == "__main__":

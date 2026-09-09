@@ -431,7 +431,7 @@ def _json_schema_descritpion(field: ExpertField) -> str:
     return f"{field.description.strip('. \t\n')}. {field.what_to_capture.strip('. \t\n')}."
 
 
-def expert_json_schema(extra_fields:dict[str, Any]|None=None) -> dict[str, Any]:
+def expert_json_schema(extra_fields:dict[str, Any]|None=None) -> str:
     """Return the static Supplementary Sheet S2 protein-record JSON Schema."""
     host_schemas = []
     for host, fields in HOST_FIELDS.items():
