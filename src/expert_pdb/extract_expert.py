@@ -350,11 +350,6 @@ def main(argv: list[str] | None = None) -> int:
     if not publications:
         log.error("No downloaded publications matched the selection.")
         return 1
-    # try:
-    #     ollama.preflight_ollama(args.ollama_url)
-    # except requests.RequestException as exc:
-    #     log.error("Ollama is unavailable at %s: %s", args.ollama_url, exc)
-    #     return 1
     asyncio.run(process_publications(args, publications))
 
 
