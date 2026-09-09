@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import requests
 
-from expert_pdb.extract_expert import _resolve_pdb_chain_data, build_detector_prompt
+from expert_pdb import extract_expert
+from expert_pdb.extract_expert import PROMPT, _resolve_pdb_chain_data, build_detector_prompt
 
 
 def test_build_detector_prompt_includes_pdbe_sequences_for_constructs():
@@ -33,3 +36,27 @@ def test_resolve_pdb_chain_data_returns_empty_list_when_pdbe_fails(monkeypatch):
     )
 
     assert _resolve_pdb_chain_data(["1abc", "2def"]) == []
+
+
+def test_extraction_prompt_does_not_advertise_ncbi_mcp_tools():
+    assert "mcp_ncbi" not in PROMPT
+
+
+def test_wire_ollama_agent_uses_only_local_agentic_tools(monkeypatch, tmp_path):
+    captured: dict = {}
+
+    def fake_agent(base_url, model, **kwargs):
+        captured.update({"base_url": base_url, "model": model, **kwargs})
+        return object()
+
+    monkeypatch.setattr(extract_expert.ollama, "AsyncOllamaAgent", fake_agent)
+    args = SimpleNamespace(ollama_url="http://ollama.test", ollama_model="test-model")
+
+    extract_expert.wire_ollama_agent(args, tmp_path)
+
+    assert set(captured) == {"base_url", "model", "extra_tools", "log_dir"}
+    assert set(captured["extra_tools"]) == {
+        "python",
+        "get_cds_for_protein_accession",
+        "submit_extracted_data",
+    }

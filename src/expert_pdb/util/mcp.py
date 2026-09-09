@@ -4,6 +4,7 @@ from mcp import ClientSession, StdioServerParameters, ListToolsResult
 from mcp.client.stdio import stdio_client
 from typing import Optional, Dict, Any, Tuple, Union
 import json
+import os
 
 # Configurar logging
 log = logging.getLogger(__name__)
@@ -14,11 +15,12 @@ MCP_PARAMS = {
     'command': 'node',
     "args": ["/Users/evgeny/code/NCBI-Datasets-MCP-Server/build/index.js"],
     "env": {
-        "NCBI_API_KEY": "fe19c39d7140f4499d88c5f0faba5fb0f608"
+        "NCBI_API_KEY": os.environ['NCBI_API_KEY'] # https://account.ncbi.nlm.nih.gov/settings/
     }
 }
 
-MCP_SELECTOR = ['get_sequence_data', 'get_gene_info', 'get_protein_info']
+MCP_SELECTOR = ['foobar']
+# MCP_SELECTOR = ['get_sequence_data', 'get_gene_info', 'get_protein_info']
 
 def _convert_mcp_tools(tools):
     return [

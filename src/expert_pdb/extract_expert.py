@@ -17,7 +17,7 @@ from ollama._utils import convert_function_to_tool
 from ollama import Tool
 
 from . import expert_schema
-from .util import jats, ollama, pdb_sequences, util, mcp, agentic_tools
+from .util import agentic_tools, jats, ollama, pdb_sequences, util
 from .util import polars as upl
 
 from .download_publications import STATE_FILENAME, configure_logging, read_mapping
@@ -102,10 +102,11 @@ PROMPT = """
     PDBe UniProt ID is available for the matched chain. Each `uniprot_mappings` item gives the
     associated UniProt residue boundaries and coverage. PDBe gene names are supporting identifiers.
 
-    If the publication contains the NCBI accession numbers, use the `mcp_ncbi` tools to retrieve 
-    the genetic sequence, and populate C1. You might need to follow a chain of NCBI records to 
-    get the gene sequence. Use only the portion of the genetic sequence that translates to 
-    amino acid sequence. Write python code to verify that sequence translation is correct.
+    If the publication contains an NCBI protein accession, use the
+    `get_cds_for_protein_accession` tool to retrieve its coding sequence and populate C1. For
+    other NCBI accession types, do not guess or derive a coding sequence. Use only the portion
+    of the genetic sequence that translates to amino acid sequence. Write python code to verify
+    that sequence translation is correct.
 
     If the publication contains production protocols for multiple proteins or construct definitions, 
     the JSON array should contain multiple elements. Be as specific as possible, do not try to 
@@ -284,12 +285,11 @@ def submit_extracted_data(s:str):
     return s
 
 def wire_ollama_agent(args:argparse.Namespace, run_dir:Path) -> ollama.AsyncOllamaAgent:
-    extra_tools = agentic_tools.OLLAMA_AGENTIC_TOOLS.copy()
-    extra_tools['submit_extracted_data'] = submit_extracted_data
+    tools = agentic_tools.OLLAMA_AGENTIC_TOOLS.copy()
+    tools['submit_extracted_data'] = submit_extracted_data
     ollama_agent = ollama.AsyncOllamaAgent(
         args.ollama_url, args.ollama_model,
-        mcp_params=mcp.MCP_PARAMS, mcp_selector=mcp.MCP_SELECTOR, extra_tools=extra_tools,
-        log_dir=run_dir
+        tools=tools, log_dir=run_dir
     )
     return ollama_agent
 

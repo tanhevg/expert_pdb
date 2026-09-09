@@ -1,10 +1,10 @@
+import asyncio
 import json
 import logging
-from pathlib import Path
-from typing import Any, Mapping, Callable, Sequence
-import asyncio
 import uuid
-from .mcp import McpClient, _convert_mcp_tools
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
 
 import ollama
 import pydantic
@@ -38,19 +38,19 @@ def _save_log(body: str, out_dir: Path, key: str, suffix:str) -> None:
 
 # git@github.com:alexyslozada/mcp-course.git:clients/ollama-py/ollama-python-app.py
 class AsyncOllamaAgent:
-    def __init__(self, base_url:str, model:str, *, 
-                 mcp_params:Mapping[str, Any]|None=None,
-                 extra_tools:Mapping[str, Callable]|None=None,
-                 mcp_selector:Sequence[str]|None=None,
-                 log_dir:Path|None):
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        *,
+        tools: Mapping[str, Callable],
+        log_dir: Path | None,
+    ):
         self.model = model
         self.ollama_client = ollama.Client(base_url)
-        self.mcp_params = mcp_params
-        self.extra_tools = extra_tools
+        self.tools = tools
         self.ollama_tools = None
-        self.mcp_client = None
         self.log_dir = log_dir
-        self.mcp_selector = mcp_selector
 
     def check_ollama(self):
         r = self.ollama_client.list()
@@ -62,27 +62,30 @@ class AsyncOllamaAgent:
 
     async def start(self):
         await asyncio.to_thread(self.check_ollama)
-        if self.mcp_params:
-            self.mcp_client = McpClient(**self.mcp_params, tool_selector=self.mcp_selector)
-            r = await self.mcp_client.connect()
-            if not r:
-                raise RuntimeError("Could not connect to MCP")
-            mcp_tools = await self.mcp_client.list_tools()
-            mcp_tools = _convert_mcp_tools(mcp_tools)
-        else:
-            mcp_tools = None
-        extra_tools = [ollama._utils.convert_function_to_tool(t) for t in self.extra_tools.values()]
-        if mcp_tools is None:
-            self.ollama_tools = extra_tools
-        elif self.extra_tools is None:
-            self.ollama_tools = mcp_tools
-        else:
-            self.ollama_tools = mcp_tools + extra_tools
+        self.ollama_tools = [
+            ollama._utils.convert_function_to_tool(tool)
+            for tool in self.tools.values()
+        ]
+        # if self.mcp_params:
+        #     self.mcp_client = McpClient(**self.mcp_params, tool_selector=self.mcp_selector)
+        #     r = await self.mcp_client.connect()
+        #     if not r:
+        #         raise RuntimeError("Could not connect to MCP")
+        #     mcp_tools = await self.mcp_client.list_tools()
+        #     mcp_tools = _convert_mcp_tools(mcp_tools)
+        # else:
+        #     mcp_tools = None
+        # extra_tools = [ollama._utils.convert_function_to_tool(t) for t in self.extra_tools.values()]
+        # if mcp_tools is None:
+        #     self.ollama_tools = extra_tools
+        # elif self.extra_tools is None:
+        #     self.ollama_tools = mcp_tools
+        # else:
+        #     self.ollama_tools = mcp_tools + extra_tools
         log.info(f"Tools: {[t['function']['name'] for t in self.ollama_tools]}")
 
     async def stop(self):
-        if self.mcp_client is not None:
-            await self.mcp_client.disconnect()
+        return None
 
     def streaming_chat(self, messages:Mapping[str, str]) -> LLMResponse:
         response = self.ollama_client.chat(model=self.model, messages=messages, tools=self.ollama_tools, think=True, stream=True)
@@ -139,19 +142,26 @@ class AsyncOllamaAgent:
             messages.extend(tool_results)
 
     async def call_tools(self, tools):
+        async def call_tool(tool):
+            name = tool['function']['name']
+            try:
+                return await self.call_tool(
+                    name,
+                    tool['function']['arguments'],
+                    tool['tool_call_id'],
+                )
+            except Exception:
+                log.exception("Tool %s failed", name)
+                return None
+
         tasks: list[asyncio.Task] = []
         async with asyncio.TaskGroup() as tg:
             for t in tools:
-                tasks.append(tg.create_task(self.call_tool(t['function']['name'], t['function']['arguments'], t['tool_call_id'])))
-        for t in tasks:
-            assert t.done()
-        return [t.result() for t in tasks]
+                tasks.append(tg.create_task(call_tool(t)))
+        return [result for t in tasks if (result := t.result()) is not None]
 
     async def call_tool(self, name, args, tc_id):
-        if name.startswith('mcp_ncbi_'):
-            tool_result = await self.call_mcp_tool(name[9:], args)
-        else:
-            tool_result = await self.call_extra_tool(name, args)
+        tool_result = await self.call_extra_tool(name, args)
         ret = {
             "role": 'tool',
             "tool_call_id": tc_id,
@@ -160,12 +170,8 @@ class AsyncOllamaAgent:
         }
         return ret
 
-    async def call_mcp_tool(self, name, args):
-        ret = await self.mcp_client.execute_tool(name, args)
-        return str(ret)
-
     async def call_extra_tool(self, name, args):
-        func = self.extra_tools[name]
+        func = self.tools[name]
         return await asyncio.to_thread(func, **args)
 
 

@@ -30,7 +30,11 @@ packages = ["src/expert_pdb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = '-ra'
+# addopts = '-ra -m "not integration"'
+markers = [
+  "integration: tests that call live external services",
+]
 
 [tool.ruff]
 target-version = "py312"
