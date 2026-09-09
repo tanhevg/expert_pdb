@@ -18,6 +18,7 @@ SYSTEM_PROMPT = """
 """
 
 STATS_KEYS = ["total_duration", "load_duration", "prompt_eval_count", "prompt_eval_duration", "eval_count", "eval_duration"]
+MAX_CHAT_INDEX = 30
 
 class LLMResponse(pydantic.BaseModel):
     response: str
@@ -114,7 +115,7 @@ class AsyncOllamaAgent:
         if system_prompt:
             messages.append({'role': 'system', 'content': system_prompt})
         chat_index = 1
-        while True:
+        while chat_index <= MAX_CHAT_INDEX:
             llm_response = await asyncio.to_thread(self.streaming_chat, messages)
             lk = f"{log_key}_{chat_index}"
             chat_index += 1
@@ -122,8 +123,8 @@ class AsyncOllamaAgent:
                 _save_log(llm_response.thinking, self.log_dir, lk, 'thinking')
             if llm_response.response:
                 _save_log(llm_response.response, self.log_dir, lk, 'response')
-            # if not llm_response.tool_calls:
-            #     return llm_response.response
+            if not llm_response.tool_calls:
+                return llm_response.response
             messages.append({
                 'role': 'assistant', 
                 'thinking': llm_response.thinking, 
@@ -140,6 +141,7 @@ class AsyncOllamaAgent:
             _save_log(str(tool_calls), self.log_dir, lk, 'tools')
             tool_results = await self.call_tools(tool_calls)
             messages.extend(tool_results)
+        return None
 
     async def call_tools(self, tools):
         async def call_tool(tool):

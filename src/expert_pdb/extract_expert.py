@@ -233,6 +233,8 @@ async def process_publication(
     #     base_url, model, prompt, publication["pmcid"], run_dir
     # )
     response = await agent.chat(prompt, ollama.SYSTEM_PROMPT, log_key=publication["pmcid"])
+    if response is None:
+        return None
     response = json.loads(response)
     log.info(f"Extracted protocols for {len(response['proteins'])} proteins")
     return response
@@ -310,6 +312,8 @@ async def process_publications(args, publications):
         try:
             log.info(f"Processing {pmcid}")
             protocols_json = await process_publication(publication, ollama_agent, run_dir, args)
+            if protocols_json is None:
+                continue
             out_path = run_dir/ f"{pmcid}_expert.json"
             with out_path.open('w') as f:
                 json.dump(protocols_json, f, indent=4, ensure_ascii=False)

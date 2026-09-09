@@ -54,8 +54,8 @@ def test_wire_ollama_agent_uses_only_local_agentic_tools(monkeypatch, tmp_path):
 
     extract_expert.wire_ollama_agent(args, tmp_path)
 
-    assert set(captured) == {"base_url", "model", "extra_tools", "log_dir"}
-    assert set(captured["extra_tools"]) == {
+    assert set(captured) == {"base_url", "model", "tools", "log_dir"}
+    assert set(captured["tools"]) == {
         "python",
         "get_cds_for_protein_accession",
         "submit_extracted_data",
