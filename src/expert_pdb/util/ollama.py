@@ -141,38 +141,28 @@ class AsyncOllamaAgent:
             _save_log(str(tool_calls), self.log_dir, lk, 'tools')
             tool_results = await self.call_tools(tool_calls)
             messages.extend(tool_results)
-        return None
+        raise RuntimeError(f"Stuck in a loop with tool calls with {MAX_CHAT_INDEX} LLM messages")
 
     async def call_tools(self, tools):
-        async def call_tool(tool):
-            name = tool['function']['name']
-            try:
-                return await self.call_tool(
-                    name,
-                    tool['function']['arguments'],
-                    tool['tool_call_id'],
-                )
-            except Exception:
-                log.exception("Tool %s failed", name)
-                return None
-
         tasks: list[asyncio.Task] = []
         async with asyncio.TaskGroup() as tg:
             for t in tools:
-                tasks.append(tg.create_task(call_tool(t)))
-        return [result for t in tasks if (result := t.result()) is not None]
+                tasks.append(tg.create_task(self.call_tool(t['function']['name'], t['function']['arguments'], t['tool_call_id'])))
+        assert all([t.done() for t in tasks])
+        return [t.result() for t in tasks if t.result() is not None]
 
     async def call_tool(self, name, args, tc_id):
-        tool_result = await self.call_extra_tool(name, args)
-        ret = {
-            "role": 'tool',
-            "tool_call_id": tc_id,
-            "name": name,
-            "content": tool_result
-        }
-        return ret
-
-    async def call_extra_tool(self, name, args):
         func = self.tools[name]
-        return await asyncio.to_thread(func, **args)
+        try:
+            tool_result = await asyncio.to_thread(func, **args)
+            ret = {
+                "role": 'tool',
+                "tool_call_id": tc_id,
+                "name": name,
+                "content": str(tool_result)
+            }
+            return ret
+        except Exception as e:
+            log.error(f"Tool {name} raised an exception", exc_info=e)
+            return None
 
